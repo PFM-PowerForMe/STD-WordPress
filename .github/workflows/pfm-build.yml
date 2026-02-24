@@ -1,0 +1,25 @@
+name: 'PFM-Custom-Container-Build'
+
+on:
+  workflow_dispatch:
+  workflow_call:
+  repository_dispatch:
+    types: [pfm-build-event]
+
+concurrency:
+  group: ${{ github.workflow }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  Call-build-workflow:
+    secrets: inherit
+    permissions:
+      contents: read
+      packages: write
+    uses: PFM-PowerForMe/PFM-Action-Public/.github/workflows/custom-container-build.yml@main
+    with:
+      build_pull_source: false
