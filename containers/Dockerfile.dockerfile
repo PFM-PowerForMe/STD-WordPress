@@ -21,7 +21,7 @@ RUN wget https://wordpress.org/wordpress-${WP_VERSION}.tar.gz -O /tmp/wordpress.
      mkdir -p /usr/src && \
      tar -xzf /tmp/wordpress.tar.gz -C /usr/src/ && \
      rm /tmp/wordpress.tar.gz && \
-     cp -r /usr/src/wordpress /var/www && \
+     cp -r /usr/src/wordpress/ /var/www/ && \
      rm -rf /var/www/wp-content && \
      mkdir -p /var/www/wp-content && \
      wget https://raw.githubusercontent.com/wp-cli/builds/gh-pages/phar/wp-cli.phar -O /usr/local/sbin/wp && \
