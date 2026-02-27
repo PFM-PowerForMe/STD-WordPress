@@ -29,8 +29,9 @@ RUN wget https://wordpress.org/wordpress-${WP_VERSION}.tar.gz -O /tmp/wordpress.
      chmod 640 /wordpress/wp-config.php && \
      mv /wordpress/wp-config.php /var/www/wp-config.php && \
      mv /wordpress/wp-cli.yml /var/www/wp-cli.yml && \
+     mv /wordpress/system-mu-plugins /var/www/system-mu-plugins && \
      rm -rf /wordpress
 
-RUN /pfm/bin/fix_env
+RUN /pfm/bin/fpm_init install ghostscript && /pfm/bin/fix_env
 WORKDIR /var/www/wp-content
 VOLUME /var/www/wp-content
