@@ -4,7 +4,7 @@ env:
   UPSTREAM_REPO: 'https://github.com/WordPress/WordPress.git'
   UPSTREAM_BRANCH: master
   TARGET_BRANCH: master
-  MATCH_TAG: '*'
+  MATCH_TAG: '6.9*'
 
 on:
   schedule:
