@@ -1,0 +1,44 @@
+{
+	frankenphp {
+		num_threads 8
+		max_threads 16
+		php_ini {
+            memory_limit 512M
+            max_execution_time 300
+            max_input_time 300
+            post_max_size 1024M
+            upload_max_filesize 1024M
+            max_input_vars 9999
+        }
+	}
+}
+
+:8080 {
+    root * /app
+
+	encode zstd br gzip
+
+    map {http.request.header.X-Forwarded-Proto} {mapped_https} {
+		"https" "on"
+		default ""
+	}
+
+	map {http.request.header.X-Forwarded-Port} {mapped_port} {
+		"" 443
+		default {http.request.header.X-Forwarded-Port}
+	}
+
+	header {
+		-Server
+		-X-Powered-By
+		-Via
+	}
+
+	php_server {
+        env HTTPS {mapped_https}
+		env SERVER_PORT {mapped_port}
+		env HTTP_FRONT_END_HTTPS {mapped_https}
+        env HTTP_X_REAL_IP {http.request.header.CF-Connecting-IP}
+        env HTTP_X_FORWARDED_FOR {http.request.header.CF-Connecting-IP}
+	} 
+}
