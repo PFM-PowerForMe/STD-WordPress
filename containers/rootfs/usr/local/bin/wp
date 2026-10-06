@@ -1,0 +1,9 @@
+#!/usr/local/bin/php
+<?php
+/**
+ * wp-cli 启动器.
+ *
+ * distroless 里没有 /usr/bin/env, 官方 phar 自带的 `#!/usr/bin/env php` shebang 用不了;
+ * 直接改 phar 的 shebang 会破坏它的 SHA1 签名, 所以这里用一个三行包装脚本载入未改动的 phar.
+ */
+require '/usr/local/lib/wp-cli.phar';

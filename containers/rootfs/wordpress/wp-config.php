@@ -16,7 +16,18 @@ define('WP_CONTENT_URL', $x_protocol . $x_host . '/wp-content');
 define('WP_PLUGIN_URL', $x_protocol . $x_host . '/wp-content/plugins');
 define('WPMU_PLUGIN_URL', $x_protocol . $x_host . '/system-mu-plugins');
 
-$env_vars = !empty($_ENV) ? $_ENV : getenv();
+// 环境变量来源: 进程环境 (getenv) 优先, 再并上 $_ENV / $_SERVER 里的标量项
+// (variables_order=EGPCS 时 $_ENV 有值, FastCGI 参数只在 $_SERVER 里).
+$env_vars = [];
+foreach ([is_array($process_env = getenv()) ? $process_env : [], is_array($_ENV ?? null) ? $_ENV : [], is_array($_SERVER ?? null) ? $_SERVER : []] as $source) {
+	foreach ($source as $key => $value) {
+		if (!is_string($key) || !is_scalar($value) || array_key_exists($key, $env_vars)) {
+			continue;
+		}
+		$env_vars[$key] = $value;
+	}
+}
+
 foreach ($env_vars as $key => $value) {
 		if (!is_string($key)) {
 		continue;
