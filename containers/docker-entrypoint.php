@@ -15,6 +15,7 @@ const WP_CONTENT   = APP_DIR . '/wp-content';
 const SRC_CONTENT  = '/usr/src/wordpress/wp-content';
 const SECRETS_FILE = WP_CONTENT . '/wp-secrets.php';
 const FRANKENPHP   = '/usr/local/bin/frankenphp';
+const WP_CLI       = '/usr/local/bin/wp';
 const CADDYFILE    = '/etc/caddy/Caddyfile';
 const PHP_INI      = '/usr/local/etc/php/conf.d/zzz-pfm.ini';
 
@@ -51,6 +52,29 @@ function env_str(string $name, string $default = ''): string
 function clamp_int(int $value, int $min, int $max): int
 {
     return max($min, min($max, $value));
+}
+
+function env_bool(string $name, bool $default): bool
+{
+    $value = getenv($name);
+
+    if ($value === false || $value === '') {
+        return $default;
+    }
+
+    return ! in_array(strtolower(trim($value)), ['false', '0', 'no', 'off'], true);
+}
+
+function exit_code(int $status): int
+{
+    if (pcntl_wifexited($status)) {
+        return pcntl_wexitstatus($status);
+    }
+    if (pcntl_wifsignaled($status)) {
+        return 128 + pcntl_wtermsig($status);
+    }
+
+    return -1;
 }
 
 /**
@@ -146,6 +170,9 @@ function write_php_ini(): void
     $maxInVars   = (int) env_str('CR_PHP_MAX_INPUT_VARS', '9999');
     $opcacheVal  = (int) env_str('CR_PHP_OPCACHE_VALIDATE', '1');
     $timezone    = env_str('CR_PHP_TIMEZONE', env_str('TZ', 'Asia/Shanghai'));
+    // distroless 里没有 shell: 这些命令执行函数本来就跑不起来, 一并关掉.
+    // 关掉 exec 还能让 WordPress 站点健康跳过 `gs --version` 探测 (class-wp-debug-data.php 会先判 function_exists).
+    $disableFunctions = env_str('CR_PHP_DISABLE_FUNCTIONS', 'exec,shell_exec,system,passthru,popen');
 
     // 让入口脚本自身的日志也跟随应用时区 (本进程启动时读的是镜像里的 php.ini)
     date_default_timezone_set($timezone);
@@ -180,6 +207,7 @@ variables_order = "EGPCS"
 expose_php = Off
 display_errors = Off
 display_startup_errors = Off
+disable_functions = {$disableFunctions}
 
 session.gc_probability = 0
 session.save_path = "/tmp/php/sessions"
@@ -216,6 +244,10 @@ INI;
     }
 
     out("已生成 php.ini (memory_limit={$memoryLimit}M, threads={$maxChildren}, opcache={$opcacheMem}M, jit={$jitMem}M)");
+
+    if ($disableFunctions !== '') {
+        out("已禁用命令执行函数: {$disableFunctions}");
+    }
 }
 
 /**
@@ -281,6 +313,124 @@ function ensure_secrets(): void
     @chmod(SECRETS_FILE, 0640);
 }
 
+// ---------------------------------------------------------------- 定时任务
+
+/**
+ * 跑一次 `wp cron event run --due-now`.
+ *
+ * 用 proc_open 的数组形式 (distroless 里没有 shell), 子进程的 stdout/stderr 全部收下来交给调用方;
+ * 超过 $timeout 秒没结束就强制结束, 避免某个插件卡死拖住整个 cron 循环.
+ *
+ * @return array{0: int, 1: string} [退出码, 输出]
+ */
+function run_wp_cron(int $timeout = 300): array
+{
+    $process = @proc_open(
+        [WP_CLI, '--quiet', 'cron', 'event', 'run', '--due-now'],
+        [0 => ['file', '/dev/null', 'r'], 1 => ['pipe', 'w'], 2 => ['pipe', 'w']],
+        $pipes
+    );
+
+    if (! is_resource($process)) {
+        return [127, 'proc_open 失败'];
+    }
+
+    stream_set_blocking($pipes[1], false);
+    stream_set_blocking($pipes[2], false);
+
+    $output  = '';
+    $code    = -1;
+    $timeoutHit = false;
+    $deadline   = microtime(true) + $timeout;
+
+    while (true) {
+        $output .= (string) stream_get_contents($pipes[1]);
+        $output .= (string) stream_get_contents($pipes[2]);
+
+        $status = proc_get_status($process);
+        if (! $status['running']) {
+            $code = (int) $status['exitcode'];
+            break;
+        }
+
+        if (microtime(true) > $deadline) {
+            $timeoutHit = true;
+            @proc_terminate($process, SIGKILL);
+
+            $killDeadline = microtime(true) + 5;
+            while (proc_get_status($process)['running'] && microtime(true) < $killDeadline) {
+                usleep(100000);
+            }
+
+            $code = 124;
+            break;
+        }
+
+        usleep(200000);
+    }
+
+    $output .= (string) stream_get_contents($pipes[1]);
+    $output .= (string) stream_get_contents($pipes[2]);
+    fclose($pipes[1]);
+    fclose($pipes[2]);
+    @proc_close($process);
+
+    $output = trim($output);
+    if ($timeoutHit) {
+        $output = "超过 {$timeout} 秒未结束, 已强制结束. {$output}";
+    }
+
+    return [$code, $output];
+}
+
+/**
+ * 容器托管的 WordPress 定时任务.
+ *
+ * 镜像默认 DISABLE_WP_CRON=true (关掉请求触发的 wp-cron), 改由这里每分钟跑一次
+ * `wp cron event run --due-now`: 单实例顺序执行, 低流量站点定时也准时, 而且不会走
+ * wp-cron.php 那条在并发 / 重复排期下会刷 "could_not_set" 的代码路径.
+ */
+function start_cron_loop(): void
+{
+    $pid = pcntl_fork();
+
+    if ($pid === -1) {
+        err('定时任务 fork 失败, 容器内定时任务不会运行');
+        return;
+    }
+    if ($pid > 0) {
+        return;  // 父进程继续 pcntl_exec 到 Caddy, 保持 Caddy 为 PID 1
+    }
+
+    out('定时任务已启动 (每分钟 wp cron event run --due-now)');
+
+    $lastSlot = null;
+    $lastCode = 0;
+
+    while (true) {
+        $slot = intdiv(time(), 60);
+
+        if ($slot !== $lastSlot) {
+            $lastSlot = $slot;
+            [$code, $output] = run_wp_cron();
+
+            if ($code !== 0) {
+                // 只在状态变化时记一行: 新装站点数据库还没好时不会每分钟刷屏
+                if ($code !== $lastCode) {
+                    err("定时任务失败 (退出码 {$code}): " . ($output === '' ? '(无输出)' : $output));
+                }
+            } elseif ($output !== '') {
+                // 插件 / 任务自己打出来的东西照旧进容器日志 (与旧镜像里 wp-cron.php 的输出一致)
+                out('[cron] ' . $output);
+            }
+
+            $lastCode = $code;
+        }
+
+        usleep(500000);
+    }
+}
+
 // ---------------------------------------------------------------- 入口
 
 function main(): int
@@ -300,6 +450,22 @@ function main(): int
     ensure_directories();
     write_php_ini();
     ensure_secrets();
+
+    // 定时任务: 默认关掉请求触发的 wp-cron (spawn_cron / wp-cron.php), 由容器内循环托管
+    $wpCronDisabled = env_bool('DISABLE_WP_CRON', true);
+    if (env_str('DISABLE_WP_CRON') === '') {
+        putenv('DISABLE_WP_CRON=' . ($wpCronDisabled ? 'true' : 'false'));
+    }
+
+    if ($wpCronDisabled) {
+        if (! function_exists('proc_open')) {
+            err('缺少 proc_open, 容器内定时任务不会运行');
+        } else {
+            start_cron_loop();
+        }
+    } else {
+        out('DISABLE_WP_CRON=false: 定时任务由请求触发, 容器内不启动 cron 循环');
+    }
 
     out('启动 frankenphp run');
     pcntl_exec(FRANKENPHP, ['run', '--config', CADDYFILE]);

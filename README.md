@@ -15,6 +15,7 @@
 | **CR_PHP_MAX_INPUT_TIME** | Integer | `300` | `60` | PHP 接收并解析输入数据的最大时间，单位秒 (`max_input_time`) |
 | **CR_PHP_MAX_INPUT_VARS** | Integer | `9999` | `3000` | PHP 允许接收的最大表单变量数量 (`max_input_vars`) |
 | **CR_PHP_OPCACHE_VALIDATE** | Integer | `1` | `0` | Opcache 是否检查文件更新。生产环境建议为 0 (最高性能)，开发环境设为 1 |
+| **CR_PHP_DISABLE_FUNCTIONS** | String | `exec,shell_exec,system,passthru,popen` | 留空 | `disable_functions`。distroless 里没有 shell，这些函数本来跑不起来；关掉 `exec` 还能让站点健康跳过 `gs --version` 探测 |
 | **DB_HOST** | String | | `...` | 数据库主机地址 |
 | **DB_NAME** | String | | `...` | 数据库名称 |
 | **DB_USER** | String | | `...` | 数据库用户名 |
@@ -45,3 +46,4 @@
 | **WP_DEBUG** | Boolean | | `false` | 是否开启 WordPress 调试模式 |
 | **WP_DEBUG_DISPLAY** | Boolean | | `false` | 是否在页面上显示调试错误信息 |
 | **WP_CACHE** | Boolean | | `false` | 是否开启 WordPress 高级对象缓存（配合 Redis 使用） |
+| **DISABLE_WP_CRON** | Boolean | `true` | `false` | 是否关闭「请求触发」的 wp-cron。默认关闭，并由容器内每分钟执行 `wp cron event run --due-now`；设为 `false` 则回到 WordPress 原生行为，容器也不再跑 cron 循环 |
