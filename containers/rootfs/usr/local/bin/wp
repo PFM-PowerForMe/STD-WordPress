@@ -4,6 +4,61 @@
  * wp-cli 启动器.
  *
  * distroless 里没有 /usr/bin/env, 官方 phar 自带的 `#!/usr/bin/env php` shebang 用不了;
- * 直接改 phar 的 shebang 会破坏它的 SHA1 签名, 所以这里用一个三行包装脚本载入未改动的 phar.
+ * 直接改 phar 的 shebang 会破坏它的 SHA1 签名, 所以这里用一个包装脚本载入未改动的 phar.
+ *
+ * 另一个 distroless 限制: 没有 shell. 帮助类请求 (`wp help`、`wp <cmd> --help`、裸 `wp`)
+ * 会被 wp-cli 交给分页器 (默认 `less -R`), 而字符串形式的 proc_open() 要走 `/bin/sh -c`,
+ * 于是 posix_spawn 失败, 紧接着 proc_close(false) 抛致命错误. wp-cli 只在 proc_open()
+ * 不存在时才会跳过 pager 直接打印 (Help_Command::pass_through_pager -> check_proc_available),
+ * 所以帮助类请求改用「禁用 proc_open 的 php」子进程来跑 (proc_open 的数组形式不经过 shell);
+ * 其余命令原样执行, 不碰 proc_open 的数组形式 —— 容器入口脚本的 cron 循环就靠它跑
+ * `wp cron event run --due-now`.
  */
-require '/usr/local/lib/wp-cli.phar';
+const WP_CLI_PHP  = '/usr/local/bin/php';
+const WP_CLI_PHAR = '/usr/local/lib/wp-cli.phar';
+
+$wp_cli_args = array_slice($argv, 1);
+
+if (function_exists('proc_open') && wp_cli_wants_help($wp_cli_args)) {
+    $disabled   = array_filter(array_map('trim', explode(',', (string) ini_get('disable_functions'))));
+    $disabled[] = 'proc_open';
+
+    $process = @proc_open(
+        array_merge(
+            [WP_CLI_PHP, '-d', 'disable_functions=' . implode(',', array_unique($disabled)), WP_CLI_PHAR],
+            $wp_cli_args
+        ),
+        [STDIN, STDOUT, STDERR],
+        $pipes
+    );
+
+    if (is_resource($process)) {
+        exit(proc_close($process));
+    }
+    // 子进程起不来就按普通命令继续执行
+}
+
+require WP_CLI_PHAR;
+
+/**
+ * 是否是 wp-cli 会交给分页器的帮助请求.
+ *
+ * 三种形态: 任意位置的 `--help`、第一个非选项参数是 `help` (如 `wp help plugin`),
+ * 以及没有任何子命令 (裸 `wp` 会打印总览). 只看第一个非选项参数, 避免把
+ * `wp option update site_desc help` 这类参数值误判成帮助.
+ */
+function wp_cli_wants_help(array $args): bool
+{
+    $first = null;
+
+    foreach ($args as $arg) {
+        if ('--help' === $arg) {
+            return true;
+        }
+        if (null === $first && '' !== $arg && '-' !== $arg[0]) {
+            $first = $arg;
+        }
+    }
+
+    return null === $first || 'help' === $first;
+}
